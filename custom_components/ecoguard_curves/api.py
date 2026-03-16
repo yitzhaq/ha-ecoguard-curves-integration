@@ -6,12 +6,11 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import aiohttp
-
+import homeassistant.util.dt as dt_util
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-import homeassistant.util.dt as dt_util
 
-from .const import API_BASE_URL, API_TOKEN_ENDPOINT, API_DATA_ENDPOINT
+from .const import API_BASE_URL, API_DATA_ENDPOINT, API_TOKEN_ENDPOINT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,9 +60,7 @@ class CurvesAPIClient:
             async with self._session.post(url, data=form_data, headers=headers) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    raise CurvesAPIError(
-                        f"Authentication failed: {response.status} - {error_text}"
-                    )
+                    raise CurvesAPIError(f"Authentication failed: {response.status} - {error_text}")
 
                 response_data = await response.json()
                 # Try different possible token field names
@@ -71,9 +68,13 @@ class CurvesAPIClient:
                     response_data.get("access_token")
                     or response_data.get("token")
                     or response_data.get("accessToken")
-                    or (response_data.get("result", {}).get("access_token") if isinstance(response_data.get("result"), dict) else None)
+                    or (
+                        response_data.get("result", {}).get("access_token")
+                        if isinstance(response_data.get("result"), dict)
+                        else None
+                    )
                 )
-                
+
                 # Token expiration (default to 1 hour if not provided)
                 expires_in = (
                     response_data.get("expires_in")
@@ -215,9 +216,7 @@ class CurvesAPIClient:
 
                 if response.status != 200:
                     error_text = await response.text()
-                    raise CurvesAPIError(
-                        f"Failed to fetch data: {response.status} - {error_text}"
-                    )
+                    raise CurvesAPIError(f"Failed to fetch data: {response.status} - {error_text}")
 
                 data = await response.json()
                 return data if isinstance(data, list) else [data]
@@ -262,7 +261,8 @@ class CurvesAPIClient:
                         if retry_response.status != 200:
                             error_text = await retry_response.text()
                             raise CurvesAPIError(
-                                f"Failed to fetch measuring devices: {retry_response.status} - {error_text}"
+                                f"Failed to fetch measuring devices: "
+                                f"{retry_response.status} - {error_text}"
                             )
                         return await retry_response.json()
 
@@ -275,9 +275,7 @@ class CurvesAPIClient:
                 return await response.json()
 
         except aiohttp.ClientError as err:
-            raise CurvesAPIError(
-                f"Error fetching measuring devices: {err}"
-            ) from err
+            raise CurvesAPIError(f"Error fetching measuring devices: {err}") from err
 
     async def get_nodes(
         self,
@@ -319,12 +317,93 @@ class CurvesAPIClient:
 
                 if response.status != 200:
                     error_text = await response.text()
-                    raise CurvesAPIError(
-                        f"Failed to fetch nodes: {response.status} - {error_text}"
-                    )
+                    raise CurvesAPIError(f"Failed to fetch nodes: {response.status} - {error_text}")
 
                 return await response.json()
 
         except aiohttp.ClientError as err:
             raise CurvesAPIError(f"Error fetching nodes: {err}") from err
 
+    async def get_utilities(self) -> list[dict[str, Any]]:
+        """Get list of available utilities."""
+        await self._ensure_authenticated()
+
+        url = f"/api/{self._domain_code}/utilities"
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with self._session.get(f"{API_BASE_URL}{url}", headers=headers) as response:
+                if response.status == 401:
+                    await self.authenticate()
+                    headers["Authorization"] = f"Bearer {self._access_token}"
+                    async with self._session.get(
+                        f"{API_BASE_URL}{url}", headers=headers
+                    ) as retry_response:
+                        if retry_response.status != 200:
+                            error_text = await retry_response.text()
+                            raise CurvesAPIError(
+                                f"Failed to fetch utilities: {retry_response.status} - {error_text}"
+                            )
+                        return await retry_response.json()
+
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise CurvesAPIError(
+                        f"Failed to fetch utilities: {response.status} - {error_text}"
+                    )
+
+                return await response.json()
+
+        except aiohttp.ClientError as err:
+            raise CurvesAPIError(f"Error fetching utilities: {err}") from err
+
+    async def get_billing_results(
+        self,
+        node_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get billing results for tariff rates."""
+        await self._ensure_authenticated()
+
+        url = f"/api/{self._domain_code}/billingresults"
+
+        params: dict[str, Any] = {}
+        if node_id:
+            params["nodeID"] = node_id
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with self._session.get(
+                f"{API_BASE_URL}{url}", headers=headers, params=params
+            ) as response:
+                if response.status == 401:
+                    await self.authenticate()
+                    headers["Authorization"] = f"Bearer {self._access_token}"
+                    async with self._session.get(
+                        f"{API_BASE_URL}{url}", headers=headers, params=params
+                    ) as retry_response:
+                        if retry_response.status != 200:
+                            error_text = await retry_response.text()
+                            raise CurvesAPIError(
+                                f"Failed to fetch billing results: "
+                                f"{retry_response.status} - {error_text}"
+                            )
+                        return await retry_response.json()
+
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise CurvesAPIError(
+                        f"Failed to fetch billing results: {response.status} - {error_text}"
+                    )
+
+                return await response.json()
+
+        except aiohttp.ClientError as err:
+            raise CurvesAPIError(f"Error fetching billing results: {err}") from err

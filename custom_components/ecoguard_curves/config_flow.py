@@ -5,22 +5,23 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
 )
 
 from .api import CurvesAPIClient, CurvesAPIError
-
-_LOGGER = logging.getLogger(__name__)
 from .const import (
     CONF_CURRENCY,
     CONF_DOMAIN_CODE,
@@ -29,12 +30,16 @@ from .const import (
     CONF_PASSWORD,
     CONF_UPDATE_INTERVAL,
     CONF_USERNAME,
+    CONF_UTILITIES,
     CONF_VAT_RATE,
     DEFAULT_CURRENCY,
     DEFAULT_UPDATE_INTERVAL,
     DEFAULT_VAT_RATE,
     DOMAIN,
+    UTILITY_TYPES,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ElectricityConsumptionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -42,9 +47,7 @@ class ElectricityConsumptionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     VERSION = 1
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
 
@@ -76,6 +79,12 @@ class ElectricityConsumptionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = f"unknown: {str(err)}"
 
+        # Create utility options from UTILITY_TYPES
+        utility_options = [
+            SelectOptionDict(value=key, label=config["name"])
+            for key, config in UTILITY_TYPES.items()
+        ]
+
         schema = vol.Schema(
             {
                 vol.Required(CONF_USERNAME): TextSelector(TextSelectorConfig()),
@@ -86,8 +95,16 @@ class ElectricityConsumptionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 vol.Required(CONF_NODE_ID): TextSelector(TextSelectorConfig()),
                 vol.Optional(CONF_MEASURING_POINT_ID): TextSelector(TextSelectorConfig()),
                 vol.Required(
-                    CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL
-                ): NumberSelector(
+                    CONF_UTILITIES,
+                    default=["electricity"],
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=utility_options,
+                        multiple=True,
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required(CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL): NumberSelector(
                     NumberSelectorConfig(
                         min=60,
                         max=3600,
@@ -99,9 +116,7 @@ class ElectricityConsumptionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 vol.Required(CONF_CURRENCY, default=DEFAULT_CURRENCY): TextSelector(
                     TextSelectorConfig()
                 ),
-                vol.Required(
-                    CONF_VAT_RATE, default=DEFAULT_VAT_RATE
-                ): NumberSelector(
+                vol.Required(CONF_VAT_RATE, default=DEFAULT_VAT_RATE): NumberSelector(
                     NumberSelectorConfig(
                         min=0,
                         max=100,
@@ -127,12 +142,21 @@ class ElectricityConsumptionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 class ElectricityConsumptionOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow for EcoGuard Curves."""
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
+
+        # Create utility options from UTILITY_TYPES
+        utility_options = [
+            SelectOptionDict(value=key, label=config["name"])
+            for key, config in UTILITY_TYPES.items()
+        ]
+
+        # Get current utilities, defaulting to electricity for backward compatibility
+        current_utilities = self.config_entry.options.get(
+            CONF_UTILITIES, self.config_entry.data.get(CONF_UTILITIES, ["electricity"])
+        )
 
         return self.async_show_form(
             step_id="init",
@@ -152,6 +176,16 @@ class ElectricityConsumptionOptionsFlowHandler(config_entries.OptionsFlow):
                         ),
                     ): TextSelector(TextSelectorConfig()),
                     vol.Required(
+                        CONF_UTILITIES,
+                        default=current_utilities,
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=utility_options,
+                            multiple=True,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(
                         CONF_UPDATE_INTERVAL,
                         default=self.config_entry.options.get(
                             CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
@@ -168,13 +202,15 @@ class ElectricityConsumptionOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Required(
                         CONF_CURRENCY,
                         default=self.config_entry.options.get(
-                            CONF_CURRENCY, self.config_entry.data.get(CONF_CURRENCY, DEFAULT_CURRENCY)
+                            CONF_CURRENCY,
+                            self.config_entry.data.get(CONF_CURRENCY, DEFAULT_CURRENCY),
                         ),
                     ): TextSelector(TextSelectorConfig()),
                     vol.Required(
                         CONF_VAT_RATE,
                         default=self.config_entry.options.get(
-                            CONF_VAT_RATE, self.config_entry.data.get(CONF_VAT_RATE, DEFAULT_VAT_RATE)
+                            CONF_VAT_RATE,
+                            self.config_entry.data.get(CONF_VAT_RATE, DEFAULT_VAT_RATE),
                         ),
                     ): NumberSelector(
                         NumberSelectorConfig(

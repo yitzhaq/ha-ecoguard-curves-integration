@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -16,6 +15,7 @@ from .const import (
     CONF_PASSWORD,
     CONF_UPDATE_INTERVAL,
     CONF_USERNAME,
+    CONF_UTILITIES,
     CONF_VAT_RATE,
     DEFAULT_VAT_RATE,
     DOMAIN,
@@ -48,9 +48,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Get configuration
     node_id = entry.data.get(CONF_NODE_ID) or entry.options.get(CONF_NODE_ID)
-    measuring_point_id = (
-        entry.data.get(CONF_MEASURING_POINT_ID)
-        or entry.options.get(CONF_MEASURING_POINT_ID)
+    measuring_point_id = entry.data.get(CONF_MEASURING_POINT_ID) or entry.options.get(
+        CONF_MEASURING_POINT_ID
     )
     update_interval = entry.data.get(CONF_UPDATE_INTERVAL, 300)
     # Get VAT rate, defaulting to 25% for Sweden if not set
@@ -61,6 +60,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         vat_rate = float(entry.options[CONF_VAT_RATE])
     else:
         vat_rate = DEFAULT_VAT_RATE
+
+    # Get utilities, defaulting to electricity for backward compatibility
+    utilities = (
+        entry.options.get(CONF_UTILITIES) or entry.data.get(CONF_UTILITIES) or ["electricity"]
+    )
+
     # Data interval is hardcoded to hourly
     data_interval = "hour"
 
@@ -72,6 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         measuring_point_id,
         update_interval,
         data_interval,
+        utilities,
         vat_rate,
     )
 

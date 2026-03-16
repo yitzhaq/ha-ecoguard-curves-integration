@@ -9,4 +9,3 @@ exclude =
     *.egg-info,
     .venv,
     venv
-
