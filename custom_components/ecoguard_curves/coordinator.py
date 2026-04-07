@@ -50,6 +50,11 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
         self._tariff_last_updated: datetime | None = None
         self._last_tariff_fetch: datetime | None = None
 
+    @property
+    def utilities(self) -> list[str]:
+        """Return configured utilities."""
+        return self._utilities
+
     async def _fetch_tariff_rates(self) -> None:
         """Fetch and update tariff rates from billing results."""
         try:
@@ -115,9 +120,25 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
 
             _LOGGER.info(f"Updated tariff rates: {rates}, service fee: {service_fee}")
 
-        except Exception as err:
-            _LOGGER.error(f"Error fetching tariff rates: {err}")
+        except Exception:
+            _LOGGER.exception("Error fetching tariff rates")
             # Don't raise - continue with old rates if available
+
+    @staticmethod
+    def _sum_values(values: list[dict[str, Any]]) -> float:
+        """Sum numeric values from API response.
+
+        Args:
+            values: List of data points from API with "Value" field
+
+        Returns:
+            Sum of all numeric values, 0.0 if no valid values
+        """
+        return sum(
+            float(p.get("Value", 0.0))
+            for p in values
+            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
+        )
 
     async def _fetch_utility_data(
         self,
@@ -233,116 +254,41 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
             past_12_months_co2_values = []
 
         # Calculate daily consumption
-        daily_consumption = sum(
-            float(p.get("Value", 0.0))
-            for p in daily_consumption_values
-            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-        )
+        daily_consumption = self._sum_values(daily_consumption_values)
 
         # Calculate monthly consumption
-        monthly_consumption = sum(
-            float(p.get("Value", 0.0))
-            for p in monthly_consumption_values
-            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-        )
+        monthly_consumption = self._sum_values(monthly_consumption_values)
 
         # Calculate yearly consumption
-        yearly_consumption = sum(
-            float(p.get("Value", 0.0))
-            for p in yearly_consumption_values
-            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-        )
+        yearly_consumption = self._sum_values(yearly_consumption_values)
 
         # Calculate previous month consumption
-        prev_month_consumption = sum(
-            float(p.get("Value", 0.0))
-            for p in prev_month_consumption_values
-            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-        )
+        prev_month_consumption = self._sum_values(prev_month_consumption_values)
 
         # Calculate past 12 months consumption
-        past_12_months_consumption = sum(
-            float(p.get("Value", 0.0))
-            for p in past_12_months_consumption_values
-            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-        )
+        past_12_months_consumption = self._sum_values(past_12_months_consumption_values)
 
         # Calculate costs
-        daily_cost_without_vat = sum(
-            float(p.get("Value", 0.0))
-            for p in daily_cost_values
-            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-        )
+        daily_cost_without_vat = self._sum_values(daily_cost_values)
 
-        monthly_cost_without_vat = sum(
-            float(p.get("Value", 0.0))
-            for p in monthly_cost_values
-            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-        )
+        monthly_cost_without_vat = self._sum_values(monthly_cost_values)
 
-        yearly_cost_without_vat = sum(
-            float(p.get("Value", 0.0))
-            for p in yearly_cost_values
-            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-        )
+        yearly_cost_without_vat = self._sum_values(yearly_cost_values)
 
-        prev_month_cost_without_vat = sum(
-            float(p.get("Value", 0.0))
-            for p in prev_month_cost_values
-            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-        )
+        prev_month_cost_without_vat = self._sum_values(prev_month_cost_values)
 
-        past_12_months_cost_without_vat = sum(
-            float(p.get("Value", 0.0))
-            for p in past_12_months_cost_values
-            if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-        )
+        past_12_months_cost_without_vat = self._sum_values(past_12_months_cost_values)
 
         # Calculate CO2 totals (API returns grams, convert to kg)
-        daily_co2 = (
-            sum(
-                float(p.get("Value", 0.0))
-                for p in daily_co2_values
-                if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-            )
-            / 1000.0
-        )
+        daily_co2 = self._sum_values(daily_co2_values) / 1000.0
 
-        monthly_co2 = (
-            sum(
-                float(p.get("Value", 0.0))
-                for p in monthly_co2_values
-                if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-            )
-            / 1000.0
-        )
+        monthly_co2 = self._sum_values(monthly_co2_values) / 1000.0
 
-        yearly_co2 = (
-            sum(
-                float(p.get("Value", 0.0))
-                for p in yearly_co2_values
-                if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-            )
-            / 1000.0
-        )
+        yearly_co2 = self._sum_values(yearly_co2_values) / 1000.0
 
-        prev_month_co2 = (
-            sum(
-                float(p.get("Value", 0.0))
-                for p in prev_month_co2_values
-                if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-            )
-            / 1000.0
-        )
+        prev_month_co2 = self._sum_values(prev_month_co2_values) / 1000.0
 
-        past_12_months_co2 = (
-            sum(
-                float(p.get("Value", 0.0))
-                for p in past_12_months_co2_values
-                if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
-            )
-            / 1000.0
-        )
+        past_12_months_co2 = self._sum_values(past_12_months_co2_values) / 1000.0
 
         # Apply VAT if configured
         vat_multiplier = 1.0 + (self._vat_rate / 100.0) if self._vat_rate > 0 else 1.0
@@ -519,8 +465,8 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
                         past_12_months_start,
                     )
                     result[utility_key] = utility_data
-                except Exception as err:
-                    _LOGGER.error(f"Error fetching data for {utility_key}: {err}")
+                except Exception:
+                    _LOGGER.exception(f"Error fetching data for {utility_key}")
                     # Continue with other utilities even if one fails
                     result[utility_key] = {
                         "consumption": 0.0,

@@ -26,7 +26,7 @@ async def async_setup_entry(
     coordinator: CurvesDataUpdateCoordinator = hass.data[DOMAIN][config_entry.entry_id]
 
     # Get utilities from coordinator
-    utilities = coordinator._utilities
+    utilities = coordinator.utilities
 
     entities = []
     for utility_key in utilities:
@@ -888,9 +888,7 @@ class UtilityPast12MonthsCostSensor(CoordinatorEntity[CurvesDataUpdateCoordinato
 
         utility_name = self._utility_config["name"]
         self._attr_name = f"{utility_name} Past 12 Months Cost"
-        self._attr_unique_id = (
-            f"{DOMAIN}_{config_entry.entry_id}_{utility_key}_past_12_months_cost"
-        )
+        self._attr_unique_id = f"{DOMAIN}_{config_entry.entry_id}_{utility_key}_past_12_months_cost"
 
     @property
     def native_value(self) -> float | None:
@@ -922,9 +920,7 @@ class UtilityPast12MonthsCO2Sensor(CoordinatorEntity[CurvesDataUpdateCoordinator
 
         utility_name = self._utility_config["name"]
         self._attr_name = f"{utility_name} Past 12 Months CO2"
-        self._attr_unique_id = (
-            f"{DOMAIN}_{config_entry.entry_id}_{utility_key}_past_12_months_co2"
-        )
+        self._attr_unique_id = f"{DOMAIN}_{config_entry.entry_id}_{utility_key}_past_12_months_co2"
 
     @property
     def native_value(self) -> float | None:
