@@ -77,7 +77,7 @@ async def async_setup_entry(
 class UtilityConsumptionSensor(CoordinatorEntity[CurvesDataUpdateCoordinator], SensorEntity):
     """Representation of total Consumption sensor for any utility."""
 
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_should_poll = False
 
     def __init__(
@@ -141,7 +141,7 @@ class UtilityConsumptionSensor(CoordinatorEntity[CurvesDataUpdateCoordinator], S
 class UtilityDailyConsumptionSensor(CoordinatorEntity[CurvesDataUpdateCoordinator], SensorEntity):
     """Representation of daily Consumption sensor for any utility."""
 
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_should_poll = False
 
     def __init__(
@@ -184,7 +184,7 @@ class UtilityDailyConsumptionSensor(CoordinatorEntity[CurvesDataUpdateCoordinato
 class UtilityMonthlyConsumptionSensor(CoordinatorEntity[CurvesDataUpdateCoordinator], SensorEntity):
     """Representation of monthly Consumption sensor for any utility."""
 
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_should_poll = False
 
     def __init__(
