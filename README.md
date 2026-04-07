@@ -165,6 +165,77 @@ _See [Tariff-Based Cost Estimation](#tariff-based-cost-estimation) for how estim
 - Hot Water & Cold Water: m³ (cubic meters)
 - CO2: kg (kilograms)
 
+### Energy Dashboard Configuration
+
+This integration provides **external statistics** for accurate hourly tracking in the Home Assistant Energy Dashboard. This fixes the issue where consumption appears in the wrong hourly bucket when using sensor entities directly.
+
+#### Why Use Statistics Instead of Sensors?
+
+- **Sensor entities**: Update based on poll time (every 5 minutes), causing energy to be attributed to the wrong hour
+- **Statistics**: Use the original API timestamps, ensuring energy is attributed to the correct hourly bucket
+
+#### How to Configure
+
+1. Go to **Settings** → **Dashboards** → **Energy**
+2. Add your utility sources (Electricity, Gas, Water)
+3. Configure each utility using the instructions below:
+
+**For Electricity:**
+- Click **Add consumption** under "Electricity grid"
+- Grid consumption: Select statistic **"Electricity Consumption"** (not `sensor.electricity_consumption`)
+  - This will be `ecoguard_curves:electricity_consumption_{node_id}` in the background
+- Cost tracking: **Yes, track costs**
+- Cost entity: Select statistic **"Electricity Cost"**
+  - Choose "Use an entity tracking the total costs" (not current price)
+
+**For Heat (District Heating):**
+- Click **Add gas** and select "Gas consumption"
+  - Note: The Energy Dashboard uses "Gas" terminology, but this is for district heating (water-based heating common in the Nordics), which is measured in kWh like natural gas
+- Gas source: Select statistic **"Heat Consumption"** (not `sensor.heat_consumption`)
+  - This will be `ecoguard_curves:heat_consumption_{node_id}` in the background
+- Cost tracking: **Yes, track costs**
+- Cost entity: Select statistic **"Heat Cost"**
+  - Choose "Use an entity tracking the total costs" (not current price)
+- Use an entity with the current gas price: **No**
+- Gas flow rate: **Skip/None** (API only provides hourly data, no real-time flow)
+
+**For Cold Water:**
+- Click **Add water** and select "Cold water consumption"
+- Water source: Select statistic **"Cold Water Consumption"**
+- Cost tracking: **Yes, track costs**  
+- Cost entity: Select statistic **"Cold Water Cost"**
+  - Choose "Use an entity tracking the total costs" (not current price)
+- Water flow rate: **Skip/None** (API only provides hourly data, no real-time flow)
+
+**For Hot Water:**
+- Click **Add water** and select "Hot water consumption"
+- Water source: Select statistic **"Hot Water Consumption"**
+- Cost tracking: **Yes, track costs**  
+- Cost entity: Select statistic **"Hot Water Cost"**
+  - Choose "Use an entity tracking the total costs" (not current price)
+- Water flow rate: **Skip/None** (API only provides hourly data, no real-time flow)
+
+#### What to Expect
+
+- **30 days of history** immediately available after first setup (from initial import)
+- **Accurate hourly attribution** - consumption appears in the correct time bucket
+- **Unit conversion support** - kWh ↔ MWh, m³ ↔ L ↔ gallons
+- **Incremental updates** - new hourly data added automatically every 5 minutes
+
+#### Sensor Entities vs Statistics
+
+**Sensor entities** (e.g., `sensor.heat_consumption`) are still created and useful for:
+- Lovelace dashboards
+- Automations
+- Template sensors
+- General consumption tracking
+
+**Statistics** (e.g., `ecoguard_curves:heat_consumption_167`) should be used for:
+- Energy Dashboard configuration only
+- Accurate hourly time attribution
+
+Both are updated simultaneously - choose the right tool for your use case.
+
 ### Example Automations
 
 #### Daily Consumption Report
