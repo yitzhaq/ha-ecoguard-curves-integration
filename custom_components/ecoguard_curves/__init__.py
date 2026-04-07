@@ -66,6 +66,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.options.get(CONF_UTILITIES) or entry.data.get(CONF_UTILITIES) or ["electricity"]
     )
 
+    # Get currency, defaulting to SEK
+    currency = entry.data.get("currency") or entry.options.get("currency", "SEK")
+
     # Data interval is hardcoded to hourly
     data_interval = "hour"
 
@@ -79,6 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         data_interval,
         utilities,
         vat_rate,
+        currency,
     )
 
     # Fetch initial data so we have data when the entities are added

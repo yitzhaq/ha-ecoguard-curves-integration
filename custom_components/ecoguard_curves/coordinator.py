@@ -2,20 +2,40 @@
 from __future__ import annotations
 
 import logging
+import zoneinfo
 from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from typing import Any
 
 import homeassistant.util.dt as dt_util
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
+
+try:
+    from homeassistant.components.recorder.models import StatisticMeanType
+
+    _USE_MEAN_TYPE = True
+except ImportError:
+    _USE_MEAN_TYPE = False
+from homeassistant.components.recorder.statistics import (
+    async_add_external_statistics,
+    get_last_statistics,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import CurvesAPIClient, CurvesAPIError
-from .const import UTILITY_TYPES
+from .const import DOMAIN, UTILITY_TYPES
 
 _LOGGER = logging.getLogger(__name__)
 
 # Swedish timezone (Europe/Stockholm)
 SWEDISH_TIMEZONE = "Europe/Stockholm"
+
+# StatisticMetaData mean kwargs — use mean_type if available, fall back to has_mean
+_STAT_MEAN_KWARGS: dict[str, Any] = (
+    {"mean_type": StatisticMeanType.NONE} if _USE_MEAN_TYPE else {"has_mean": False}
+)
 
 
 class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
@@ -31,6 +51,7 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
         data_interval: str,
         utilities: list[str],
         vat_rate: float = 0.0,
+        currency: str = "SEK",
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
@@ -45,6 +66,7 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
         self._data_interval = data_interval
         self._utilities = utilities
         self._vat_rate = vat_rate
+        self._currency = currency
         self._tariff_rates: dict[str, float] = {}
         self._service_fee: float = 0.0
         self._tariff_last_updated: datetime | None = None
@@ -125,6 +147,34 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
             # Don't raise - continue with old rates if available
 
     @staticmethod
+    def _extract_values(
+        response_data: list[dict[str, Any]], utility: str, func: str
+    ) -> list[dict[str, Any]]:
+        """Extract values from API response for a specific utility and function.
+
+        Args:
+            response_data: Raw API response data
+            utility: Utility API code (e.g. "ELEC", "HW")
+            func: Function type (e.g. "con", "price", "co2")
+
+        Returns:
+            List of value dicts with "Time" and "Value" keys
+        """
+        values_list: list[dict[str, Any]] = []
+        for item in response_data:
+            if not isinstance(item, dict):
+                continue
+            results = item.get("Result", [])
+            for result in results:
+                if not isinstance(result, dict):
+                    continue
+                if result.get("Utl") == utility and result.get("Func") == func:
+                    values = result.get("Values", [])
+                    if isinstance(values, list):
+                        values_list.extend(values)
+        return values_list
+
+    @staticmethod
     def _sum_values(values: list[dict[str, Any]]) -> float:
         """Sum numeric values from API response.
 
@@ -139,6 +189,311 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
             for p in values
             if isinstance(p, dict) and isinstance(p.get("Value"), (int, float))
         )
+
+    async def _import_initial_history(
+        self,
+        utility_key: str,
+        utility_config: dict[str, Any],
+        statistic_id: str,
+        cost_statistic_id: str,
+        vat_multiplier: float,
+        currency: str,
+    ) -> None:
+        """Import 30 days of historical data on first run.
+
+        Args:
+            utility_key: Key identifying the utility type
+            utility_config: Utility configuration dict
+            statistic_id: Statistic ID for consumption
+            cost_statistic_id: Statistic ID for cost
+            vat_multiplier: VAT multiplier to apply to costs
+            currency: Currency code for cost statistics
+        """
+        api_code = utility_config["api_code"]
+        now_utc = dt_util.utcnow()
+
+        # Calculate 30 days ago (aligned to midnight in Swedish timezone)
+        swedish_tz = zoneinfo.ZoneInfo(SWEDISH_TIMEZONE)
+        now_swedish = now_utc.astimezone(swedish_tz)
+        history_start_swedish = now_swedish - timedelta(days=30)
+        history_start_swedish = history_start_swedish.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        history_start_utc = history_start_swedish.astimezone(dt_timezone.utc)
+
+        _LOGGER.info(
+            f"Fetching 30-day history for {utility_key} from {history_start_utc} to {now_utc}"
+        )
+
+        try:
+            # Build utility list for API call
+            utilities = [f"{api_code}[con]", f"{api_code}[price]"]
+
+            # Fetch historical data
+            history_data = await self.client.get_data(
+                node_id=self._node_id,
+                measuring_point_id=self._measuring_point_id,
+                from_date=history_start_utc,
+                to_date=now_utc,
+                interval="hour",
+                utilities=utilities,
+            )
+
+            # Extract consumption and cost values
+            history_consumption_values = self._extract_values(history_data, api_code, "con")
+            history_cost_values = self._extract_values(history_data, api_code, "price")
+
+            # Build consumption statistics
+            consumption_sum = 0.0
+            consumption_statistics = []
+            for point in history_consumption_values:
+                if not isinstance(point, dict):
+                    continue
+
+                value = point.get("Value")
+                time_ts = point.get("Time")
+
+                # Skip None values (incomplete hours)
+                if value is None or time_ts is None:
+                    continue
+
+                start = datetime.fromtimestamp(time_ts, tz=dt_timezone.utc)
+                consumption_sum += float(value)
+                consumption_statistics.append(
+                    StatisticData(start=start, state=float(value), sum=consumption_sum)
+                )
+
+            # Build cost statistics
+            cost_sum = 0.0
+            cost_statistics = []
+            for point in history_cost_values:
+                if not isinstance(point, dict):
+                    continue
+
+                value = point.get("Value")
+                time_ts = point.get("Time")
+
+                if value is None or time_ts is None:
+                    continue
+
+                start = datetime.fromtimestamp(time_ts, tz=dt_timezone.utc)
+                cost_value = float(value) * vat_multiplier
+                cost_sum += cost_value
+                cost_statistics.append(StatisticData(start=start, state=cost_value, sum=cost_sum))
+
+            # Build metadata
+            # unit_class enables HA unit conversion (kWh↔MWh, m³↔L↔gal)
+            device_class = utility_config["device_class_consumption"]
+            if device_class == "energy":
+                unit_class = "energy"
+            elif device_class == "water":
+                unit_class = "volume"
+            else:
+                unit_class = None
+
+            consumption_metadata = StatisticMetaData(
+                **_STAT_MEAN_KWARGS,
+                has_sum=True,
+                name=f"{utility_config['name']} Consumption",
+                source=DOMAIN,
+                statistic_id=statistic_id,
+                unit_class=unit_class,
+                unit_of_measurement=utility_config["unit_consumption"],
+            )
+
+            cost_metadata = StatisticMetaData(
+                **_STAT_MEAN_KWARGS,
+                has_sum=True,
+                name=f"{utility_config['name']} Cost",
+                source=DOMAIN,
+                statistic_id=cost_statistic_id,
+                unit_class=None,
+                unit_of_measurement=currency,
+            )
+
+            # Import statistics
+            if consumption_statistics:
+                async_add_external_statistics(
+                    self.hass, consumption_metadata, consumption_statistics
+                )
+                _LOGGER.info(
+                    f"Imported {len(consumption_statistics)} historical consumption statistics "
+                    f"for {utility_key}"
+                )
+
+            if cost_statistics:
+                async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
+                _LOGGER.info(
+                    f"Imported {len(cost_statistics)} historical cost statistics for {utility_key}"
+                )
+
+        except Exception:
+            _LOGGER.exception(f"Error importing initial history for {utility_key}")
+            # Don't raise - continue with normal operation even if history import fails
+
+    async def _import_statistics(
+        self,
+        utility_key: str,
+        hourly_consumption_values: list[dict],
+        hourly_cost_values: list[dict],
+        vat_multiplier: float,
+        currency: str,
+    ) -> None:
+        """Import hourly statistics for energy dashboard.
+
+        Args:
+            utility_key: Key identifying the utility type
+            hourly_consumption_values: List of hourly consumption data points
+            hourly_cost_values: List of hourly cost data points
+            vat_multiplier: VAT multiplier to apply to costs
+            currency: Currency code for cost statistics
+        """
+        utility_config = UTILITY_TYPES[utility_key]
+
+        # Build statistic IDs
+        statistic_id = f"{DOMAIN}:{utility_key}_consumption_{self._node_id}"
+        cost_statistic_id = f"{DOMAIN}:{utility_key}_cost_{self._node_id}"
+
+        # unit_class enables HA unit conversion (kWh↔MWh, m³↔L↔gal)
+        device_class = utility_config["device_class_consumption"]
+        if device_class == "energy":
+            unit_class = "energy"
+        elif device_class == "water":
+            unit_class = "volume"
+        else:
+            unit_class = None
+
+        # Build metadata for consumption statistics
+        # Note: mean_type is MANDATORY in HA 2026.4+, has_mean is deprecated
+        consumption_metadata = StatisticMetaData(
+            **_STAT_MEAN_KWARGS,
+            has_sum=True,
+            name=f"{utility_config['name']} Consumption",
+            source=DOMAIN,
+            statistic_id=statistic_id,
+            unit_class=unit_class,
+            unit_of_measurement=utility_config["unit_consumption"],
+        )
+
+        # Build metadata for cost statistics
+        cost_metadata = StatisticMetaData(
+            **_STAT_MEAN_KWARGS,
+            has_sum=True,
+            name=f"{utility_config['name']} Cost",
+            source=DOMAIN,
+            statistic_id=cost_statistic_id,
+            unit_class=None,
+            unit_of_measurement=currency,
+        )
+
+        # Get last known sums for incremental updates
+        last_stats = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
+        )
+
+        if statistic_id in last_stats and last_stats[statistic_id]:
+            consumption_sum = last_stats[statistic_id][0].get("sum", 0.0)
+            last_consumption_time = last_stats[statistic_id][0]["start"]
+        else:
+            consumption_sum = 0.0
+            last_consumption_time = None
+
+        last_cost_stats = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 1, cost_statistic_id, True, {"sum"}
+        )
+
+        if cost_statistic_id in last_cost_stats and last_cost_stats[cost_statistic_id]:
+            cost_sum = last_cost_stats[cost_statistic_id][0].get("sum", 0.0)
+            last_cost_time = last_cost_stats[cost_statistic_id][0]["start"]
+        else:
+            cost_sum = 0.0
+            last_cost_time = None
+
+        # On first run, fetch 30 days of historical data for initial import
+        if last_consumption_time is None:
+            _LOGGER.info(f"First run for {utility_key} statistics - importing 30 days of history")
+            await self._import_initial_history(
+                utility_key,
+                utility_config,
+                statistic_id,
+                cost_statistic_id,
+                vat_multiplier,
+                currency,
+            )
+
+            # Re-fetch last statistics after initial history import
+            last_stats = await get_instance(self.hass).async_add_executor_job(
+                get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
+            )
+
+            if statistic_id in last_stats and last_stats[statistic_id]:
+                consumption_sum = last_stats[statistic_id][0].get("sum", 0.0)
+                last_consumption_time = last_stats[statistic_id][0]["start"]
+
+            last_cost_stats = await get_instance(self.hass).async_add_executor_job(
+                get_last_statistics, self.hass, 1, cost_statistic_id, True, {"sum"}
+            )
+
+            if cost_statistic_id in last_cost_stats and last_cost_stats[cost_statistic_id]:
+                cost_sum = last_cost_stats[cost_statistic_id][0].get("sum", 0.0)
+                last_cost_time = last_cost_stats[cost_statistic_id][0]["start"]
+
+        # Build consumption statistics from hourly values
+        consumption_statistics = []
+        for point in hourly_consumption_values:
+            if not isinstance(point, dict):
+                continue
+
+            value = point.get("Value")
+            time_ts = point.get("Time")
+
+            # Skip None values (incomplete hours) and already imported data
+            if value is None or time_ts is None:
+                continue
+
+            if last_consumption_time is not None and time_ts < last_consumption_time.timestamp():
+                continue
+
+            # API timestamps are UTC Unix epoch
+            start = datetime.fromtimestamp(time_ts, tz=dt_timezone.utc)
+
+            consumption_sum += float(value)
+            consumption_statistics.append(
+                StatisticData(start=start, state=float(value), sum=consumption_sum)
+            )
+
+        # Build cost statistics from hourly values
+        cost_statistics = []
+        for point in hourly_cost_values:
+            if not isinstance(point, dict):
+                continue
+
+            value = point.get("Value")
+            time_ts = point.get("Time")
+
+            # Skip None values and already imported data
+            if value is None or time_ts is None:
+                continue
+
+            if last_cost_time is not None and time_ts < last_cost_time.timestamp():
+                continue
+
+            start = datetime.fromtimestamp(time_ts, tz=dt_timezone.utc)
+            cost_value = float(value) * vat_multiplier
+
+            cost_sum += cost_value
+            cost_statistics.append(StatisticData(start=start, state=cost_value, sum=cost_sum))
+
+        # Insert statistics into HA database
+        if consumption_statistics:
+            async_add_external_statistics(self.hass, consumption_metadata, consumption_statistics)
+            _LOGGER.debug(
+                f"Imported {len(consumption_statistics)} consumption statistics for {utility_key}"
+            )
+
+        if cost_statistics:
+            async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
+            _LOGGER.debug(f"Imported {len(cost_statistics)} cost statistics for {utility_key}")
 
     async def _fetch_utility_data(
         self,
@@ -160,24 +515,6 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
         # CO2 data seems to be available for electricity and hot water
         if utility_key in ["electricity", "hot_water"]:
             utilities.append(f"{api_code}[co2]")
-
-        def extract_values(
-            response_data: list[dict[str, Any]], utility: str, func: str
-        ) -> list[dict[str, Any]]:
-            """Extract values from API response for a specific utility and function."""
-            values_list = []
-            for item in response_data:
-                if not isinstance(item, dict):
-                    continue
-                results = item.get("Result", [])
-                for result in results:
-                    if not isinstance(result, dict):
-                        continue
-                    if result.get("Utl") == utility and result.get("Func") == func:
-                        values = result.get("Values", [])
-                        if isinstance(values, list):
-                            values_list.extend(values)
-            return values_list
 
         # Fetch data for different time periods
         daily_data = await self.client.get_data(
@@ -227,25 +564,42 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
             utilities=utilities,
         )
 
+        # VAT multiplier used for both statistics import and sensor cost values
+        vat_multiplier = 1.0 + (self._vat_rate / 100.0) if self._vat_rate > 0 else 1.0
+
         # Extract values for this utility
-        daily_consumption_values = extract_values(daily_data, api_code, "con")
-        monthly_consumption_values = extract_values(monthly_data, api_code, "con")
-        yearly_consumption_values = extract_values(yearly_data, api_code, "con")
-        prev_month_consumption_values = extract_values(prev_month_data, api_code, "con")
-        past_12_months_consumption_values = extract_values(past_12_months_data, api_code, "con")
-        daily_cost_values = extract_values(daily_data, api_code, "price")
-        monthly_cost_values = extract_values(monthly_data, api_code, "price")
-        yearly_cost_values = extract_values(yearly_data, api_code, "price")
-        prev_month_cost_values = extract_values(prev_month_data, api_code, "price")
-        past_12_months_cost_values = extract_values(past_12_months_data, api_code, "price")
+        daily_consumption_values = self._extract_values(daily_data, api_code, "con")
+        monthly_consumption_values = self._extract_values(monthly_data, api_code, "con")
+        yearly_consumption_values = self._extract_values(yearly_data, api_code, "con")
+        prev_month_consumption_values = self._extract_values(prev_month_data, api_code, "con")
+        past_12_months_consumption_values = self._extract_values(
+            past_12_months_data, api_code, "con"
+        )
+        daily_cost_values = self._extract_values(daily_data, api_code, "price")
+        monthly_cost_values = self._extract_values(monthly_data, api_code, "price")
+        yearly_cost_values = self._extract_values(yearly_data, api_code, "price")
+        prev_month_cost_values = self._extract_values(prev_month_data, api_code, "price")
+        past_12_months_cost_values = self._extract_values(past_12_months_data, api_code, "price")
+
+        # Import statistics for energy dashboard (using hourly data with correct timestamps)
+        try:
+            await self._import_statistics(
+                utility_key,
+                daily_consumption_values,  # These are hourly values for today
+                daily_cost_values,
+                vat_multiplier,
+                self._currency,
+            )
+        except Exception:
+            _LOGGER.exception(f"Error importing statistics for {utility_key}")
 
         # Extract CO2 values only for electricity and hot water
         if utility_key in ["electricity", "hot_water"]:
-            daily_co2_values = extract_values(daily_data, api_code, "co2")
-            monthly_co2_values = extract_values(monthly_data, api_code, "co2")
-            yearly_co2_values = extract_values(yearly_data, api_code, "co2")
-            prev_month_co2_values = extract_values(prev_month_data, api_code, "co2")
-            past_12_months_co2_values = extract_values(past_12_months_data, api_code, "co2")
+            daily_co2_values = self._extract_values(daily_data, api_code, "co2")
+            monthly_co2_values = self._extract_values(monthly_data, api_code, "co2")
+            yearly_co2_values = self._extract_values(yearly_data, api_code, "co2")
+            prev_month_co2_values = self._extract_values(prev_month_data, api_code, "co2")
+            past_12_months_co2_values = self._extract_values(past_12_months_data, api_code, "co2")
         else:
             daily_co2_values = []
             monthly_co2_values = []
@@ -290,8 +644,7 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
 
         past_12_months_co2 = self._sum_values(past_12_months_co2_values) / 1000.0
 
-        # Apply VAT if configured
-        vat_multiplier = 1.0 + (self._vat_rate / 100.0) if self._vat_rate > 0 else 1.0
+        # Apply VAT to costs
         daily_cost = daily_cost_without_vat * vat_multiplier
         monthly_cost = monthly_cost_without_vat * vat_multiplier
         yearly_cost = yearly_cost_without_vat * vat_multiplier
@@ -394,9 +747,6 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
                 await self._fetch_tariff_rates()
 
             # Get current time in Swedish timezone for proper day boundaries
-            import zoneinfo
-            from datetime import timezone as dt_timezone
-
             swedish_tz = zoneinfo.ZoneInfo(SWEDISH_TIMEZONE)
             now_utc = dt_util.utcnow()
 
