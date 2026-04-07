@@ -217,10 +217,39 @@ This integration provides **external statistics** for accurate hourly tracking i
 
 #### What to Expect
 
-- **30 days of history** immediately available after first setup (from initial import)
-- **Accurate hourly attribution** - consumption appears in the correct time bucket
-- **Unit conversion support** - kWh ↔ MWh, m³ ↔ L ↔ gallons
-- **Incremental updates** - new hourly data added automatically every 5 minutes
+- **Up to 5 years of history** imported on first setup (however much the API has available)
+- **Accurate hourly attribution** — consumption appears in the correct time bucket
+- **Unit conversion support** — kWh ↔ MWh, m³ ↔ L ↔ gallons
+- **Incremental updates** — new hourly data replayed automatically every 5 minutes
+- **Background import** — initial history import runs in the background without blocking Home Assistant startup
+
+#### Cost Statistics Behavior
+
+Cost statistics provide cost data for every hour where consumption exists, using real billing data when available and estimated costs when not.
+
+**For Unbilled Periods (current billing cycle):**
+- Cost is **estimated** using actual consumption × current tariff rate × VAT
+- This prevents the Energy Dashboard from showing blank costs during the current billing cycle
+- Updated every 5 minutes as new consumption data arrives throughout the day
+
+**For Historical Periods Without Billing Data:**
+- The API may not have cost data for periods before billing started (typically 2+ years ago)
+- Cost is **estimated using calendar-month matching**: the per-unit rate from the same calendar month of the oldest year with real billing data is used
+- For example, January 2023 costs are estimated using January 2024's actual per-unit rate
+- This accounts for seasonal pricing differences (e.g., heat costs vary significantly between winter and summer)
+- If no historical rate is available for a given month, the current tariff rate is used as a fallback
+
+**When Billing Data Becomes Available:**
+- Once daily, the integration checks if real billing data has appeared for previously-estimated periods
+- When detected, cost statistics are **automatically updated** from estimated to real values
+- The running cost totals are recalculated to maintain accuracy
+- **No manual intervention required** — your Energy Dashboard history corrects itself
+
+**Important Notes:**
+- Real billing data typically covers the last 2 years; older costs are always estimated
+- Heat cost estimates may be significantly off during season changes, even with calendar-month matching, since rates vary year-to-year
+- Both estimated and real costs include VAT (matching what you actually pay)
+- See [Tariff-Based Cost Estimation](#tariff-based-cost-estimation) for accuracy analysis of the estimation approach
 
 #### Sensor Entities vs Statistics
 
@@ -282,11 +311,13 @@ entities:
 
 ### Cost Data and Billing Periods
 
-**Cost sensors may show zero for current billing periods.** Based on testing, the EcoGuard Curves API appears to only provide cost data for completed billing periods.
+**Billed cost sensors may show zero for current billing periods.** Based on testing, the EcoGuard Curves API appears to only provide cost data for completed billing periods.
 
 - **Daily Cost**: May show `0.00` for the current day
 - **Monthly Cost**: May show `0.00` for the current month
 - **Year to Date Cost**: Appears to show cost for **completed months only**
+
+This applies to the **billed cost sensors** listed under [Cost Sensors (Billed)](#cost-sensors-billed). The Energy Dashboard statistics and estimated cost sensors use tariff-based estimation to avoid showing zero — see [Cost Statistics Behavior](#cost-statistics-behavior) and [Tariff-Based Cost Estimation](#tariff-based-cost-estimation).
 
 **Possible reason:** Utility companies may only finalize cost data after billing periods are closed. During an ongoing billing period, consumption is tracked but costs might not yet be available from the API.
 
