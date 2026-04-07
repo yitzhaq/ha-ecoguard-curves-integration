@@ -42,8 +42,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Authenticate
     try:
         await client.authenticate()
-    except Exception as err:
-        _LOGGER.error("Failed to authenticate with Curves API: %s", err)
+    except Exception:
+        _LOGGER.exception("Failed to authenticate with Curves API")
         return False
 
     # Get configuration
