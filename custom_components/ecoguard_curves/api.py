@@ -182,8 +182,7 @@ class CurvesAPIClient:
 
         # Utility is required - default to electricity consumption if not specified
         if utilities:
-            for util in utilities:
-                params.append(("utl", util))
+            params.extend(("utl", util) for util in utilities)
         else:
             # Default utilities for electricity consumption
             params.append(("utl", "ELEC[con]"))
