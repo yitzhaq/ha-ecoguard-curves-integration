@@ -342,13 +342,19 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
             except (ValueError, TypeError, OSError):
                 latest_reading_str = str(latest_timestamp)
 
-        # Calculate estimated costs using tariff rates
+        # Calculate estimated costs using tariff rates (including VAT)
         tariff_rate = self._tariff_rates.get(api_code, 0.0)
-        estimated_daily_cost = daily_consumption * tariff_rate if tariff_rate > 0 else 0.0
-        estimated_monthly_cost = monthly_consumption * tariff_rate if tariff_rate > 0 else 0.0
-        estimated_prev_month_cost = prev_month_consumption * tariff_rate if tariff_rate > 0 else 0.0
+        estimated_daily_cost = (
+            daily_consumption * tariff_rate * vat_multiplier if tariff_rate > 0 else 0.0
+        )
+        estimated_monthly_cost = (
+            monthly_consumption * tariff_rate * vat_multiplier if tariff_rate > 0 else 0.0
+        )
+        estimated_prev_month_cost = (
+            prev_month_consumption * tariff_rate * vat_multiplier if tariff_rate > 0 else 0.0
+        )
         estimated_past_12_months_cost = (
-            past_12_months_consumption * tariff_rate if tariff_rate > 0 else 0.0
+            past_12_months_consumption * tariff_rate * vat_multiplier if tariff_rate > 0 else 0.0
         )
 
         return {
@@ -397,12 +403,9 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
             import zoneinfo
             from datetime import timezone as dt_timezone
 
+            # Get current time in Swedish timezone for proper day boundaries
             swedish_tz = zoneinfo.ZoneInfo(SWEDISH_TIMEZONE)
             now_utc = dt_util.utcnow()
-
-            # Convert UTC to Swedish timezone
-            if now_utc.tzinfo is None:
-                now_utc = now_utc.replace(tzinfo=dt_timezone.utc)
 
             now_swedish = now_utc.astimezone(swedish_tz)
 
@@ -437,9 +440,11 @@ class CurvesDataUpdateCoordinator(DataUpdateCoordinator):
             prev_month_start = prev_month_start_swedish.astimezone(dt_timezone.utc)
             prev_month_end = current_month_start_swedish.astimezone(dt_timezone.utc)
 
-            # Calculate past 12 months start (rolling 12-month window)
-            # Simply go back ~365 days from now
-            past_12_months_start = now_utc - timedelta(days=365)
+            # Calculate past 12 months start (rolling 12-month window, aligned to midnight)
+            past_12_months_swedish = now_swedish.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ) - timedelta(days=365)
+            past_12_months_start = past_12_months_swedish.astimezone(dt_timezone.utc)
 
             # Fetch data for each configured utility
             result = {
